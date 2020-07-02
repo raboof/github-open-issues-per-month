@@ -19,14 +19,32 @@ import spray.json._
 import akka.http.scaladsl.unmarshalling._
 
 object Main extends App {
-  case class Issue(number: Integer, created_at: String, closed_at: Option[String]);
+
+  // issue or PR
+  abstract class IPR {
+    val created_at: String
+    val closed_at: Option[String]
+  }
+  case class Issue(created_at: String, closed_at: Option[String]) extends IPR
+  case class Pr(created_at: String, closed_at: Option[String]) extends IPR
+
   object Issue {
     def apply(json: JsObject): Issue = 
-      json.getFields("number", "created_at", "closed_at") match {
-        case List(JsNumber(number), JsString(created_at), JsString(closed_at)) =>
-          Issue(number.toInt, created_at, Some(closed_at))
-        case List(JsNumber(number), JsString(created_at), _) =>
-          Issue(number.toInt, created_at, None)
+      json.getFields("created_at", "closed_at") match {
+        case List(JsString(created_at), JsString(closed_at)) =>
+          Issue(created_at, Some(closed_at))
+        case List(JsString(created_at), _) =>
+          Issue(created_at, None)
+      }
+  }
+
+  object Pr {
+    def apply(json: JsObject): Pr =
+      json.getFields("created_at", "closed_at") match {
+        case List(JsString(created_at), JsString(closed_at)) =>
+          Pr(created_at, Some(closed_at))
+        case List(JsString(created_at), _) =>
+          Pr(created_at, None)
       }
   }
 
@@ -65,8 +83,14 @@ object Main extends App {
       .map(Issue(_))
   }
 
+  def getPrs(owner: String, repo: String): Source[Pr, _] = {
+    getPaged(s"https://api.github.com/repos/$owner/$repo/pulls?state=all")
+      .map(Pr(_))
+  }
+
+
   case class Summary(created: Map[String, Int], closed: Map[String, Int]) {
-    def updateWith(issue: Issue): Summary = {
+    def updateWith(issue: IPR): Summary = {
       val cr = issue.created_at.take(7)
       Summary(
         created.updated(cr, created.get(cr).getOrElse(0) + 1),
@@ -90,9 +114,12 @@ object Main extends App {
   }
 
   try {
-    val done = getIssues("nixos", "nixpkgs")
-      .runWith(Sink.fold[Summary, Issue](Summary.empty)((m, issue) =>
-          m.updateWith(issue)))
+    //val done = getIssues("nixos", "nixpkgs")
+    //  .runWith(Sink.fold[Summary, Issue](Summary.empty)((m, issue) =>
+    //      m.updateWith(issue)))
+    val done = getPrs("nixos", "nixpkgs")
+      .runWith(Sink.fold[Summary, Pr](Summary.empty)((m, pr) =>
+          m.updateWith(pr)))
     Await.result(done, 10.hours)
     done.foreach(println)
   } finally {
